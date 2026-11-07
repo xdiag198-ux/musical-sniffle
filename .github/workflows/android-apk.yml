@@ -1,0 +1,85 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Analyze and build release APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # Phone-friendly route: a user may upload this project as one ZIP file.
+      - name: Unpack uploaded project archive when needed
+        shell: bash
+        run: |
+          if [ ! -f pubspec.yaml ]; then
+            archive=""
+            for candidate in Oreate_Music_Cloud_Build.zip Oreate_Music_Flutter_Project.zip; do
+              if [ -f "$candidate" ]; then archive="$candidate"; break; fi
+            done
+            if [ -z "$archive" ]; then
+              echo 'pubspec.yaml not found and no supported project ZIP was uploaded.' >&2
+              exit 1
+            fi
+            mkdir -p /tmp/oreate-source
+            unzip -q "$archive" -d /tmp/oreate-source
+            source_pubspec=$(find /tmp/oreate-source -name pubspec.yaml -print -quit)
+            if [ -z "$source_pubspec" ]; then echo 'pubspec.yaml was not found inside ZIP.' >&2; exit 1; fi
+            source_dir=$(dirname "$source_pubspec")
+            cp -a "$source_dir"/. .
+          fi
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # This repository intentionally contains only Dart source and pubspec.
+      # Generate the standard Android Gradle project on GitHub's build machine.
+      - name: Generate Android platform files
+        run: flutter create --platforms=android --org com.oreate .
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Analyze Dart code
+        id: analyze
+        continue-on-error: true
+        run: flutter analyze --no-pub
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: oreate-music-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Add build summary
+        if: always()
+        run: |
+          echo '## Oreate Music Android build' >> "$GITHUB_STEP_SUMMARY"
+          echo '- APK build: see the Build release APK step.' >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.analyze.outcome }}" = "success" ]; then
+            echo '- flutter analyze: passed.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '- flutter analyze: reported issues; see its log. APK build was still attempted.' >> "$GITHUB_STEP_SUMMARY"
+          fi
